@@ -5,9 +5,9 @@ on:
     - cron: '0 22 * * *' # 每天北京时间早上 6 点自动运行
   workflow_dispatch: # 允许网页端随时手动点击运行
 
-# 顺手消除 Node 20 弃用警告
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+# 核心修复 1：赋予 GitHub Actions 推送代码到仓库的最高写入权限
+permissions:
+  contents: write
 
 jobs:
   build:
@@ -18,56 +18,70 @@ jobs:
 
       - name: Download and Install Mihomo
         run: |
-          mkdir -p bin
+          mkdir -p bin build
           curl -sSLf "https://github.com/MetaCubeX/mihomo/releases/download/v1.19.26/mihomo-linux-amd64-v1.19.26.gz" -o bin/mihomo.gz
           gzip -d bin/mihomo.gz
           chmod +x bin/mihomo
           sudo mv bin/mihomo /usr/local/bin/mihomo
+          
+          # 核心修复 2：创建一个空白配置，彻底封杀 Mihomo 试图在后台启动代理监听的行为
+          echo "mixed-port: 0" > build/config.yaml
 
       - name: Compile Direct-DIY Rule (Remote Merge)
         run: |
-          mkdir -p build
-          # 1. 下载对方提供的 Seven1_Direct_Domain.mrs 二进制文件
-          curl -sSLf "https://raw.githubusercontent.com/Seven1echo/Yaml/refs/heads/main/rules/Seven1_Direct_Domain.mrs" -o build/remote_direct.mrs
+          # 1. 下载对方提供的 .mrs 文件
+          curl -sSLf "https://raw.githubusercontent.com/Seven1echo/Yaml/refs/heads/main/rules/Seven1_Direct_Domain.mrs" -o build/remote_direct.mrs || true
           
-          # 2. 解压：5秒后不管退不退出都强杀，并用 || true 告诉系统忽略强杀返回的错误码
-          timeout 5s mihomo cli ruleset unpack build/remote_direct.mrs -o build/remote_direct.yaml -d . || true
+          # 2. 解压（指定 -d build 让它读取我们的空白配置，保证用完即走）
+          if [ -f build/remote_direct.mrs ]; then
+            timeout 10s mihomo cli ruleset unpack build/remote_direct.mrs -o build/remote_direct.yaml -d build || true
+          fi
           
-          # 3. 创建标准规则文件头
+          # 3. 创建文件头并提取对方有效条目
           echo "payload:" > build/direct-diy.yaml
-          
-          # 4. 提取对方规则的有效条目
           if [ -f build/remote_direct.yaml ]; then
             grep -E '^  - ' build/remote_direct.yaml >> build/direct-diy.yaml || true
           fi
           
-          # 5. 检查本地 direct-diy.list 是否存在，若存在则追加到末尾
+          # 4. 叠加你自己的 direct-diy.list
           if [ -f direct-diy.list ]; then
             cat direct-diy.list >> build/direct-diy.yaml
           fi
           
-          # 6. 重新编译：同样加上强杀和忽略报错保险
-          timeout 5s mihomo cli ruleset compile build/direct-diy.yaml -d . || true
-          mv build/direct-diy.mrs ./direct-diy.mrs
+          # 5. 重新编译
+          timeout 10s mihomo cli ruleset compile build/direct-diy.yaml -d build || true
+          
+          # 核心修复 3：文件确认生成了再去移动，防止找不到文件导致脚本报错崩溃
+          if [ -f build/direct-diy.mrs ]; then
+            mv build/direct-diy.mrs ./direct-diy.mrs
+          fi
 
       - name: Compile Proxy-DIY Rule (Local Only)
         run: |
-          # 1. 创建标准规则文件头
           echo "payload:" > build/proxy-diy.yaml
-          
-          # 2. 检查本地 proxy-diy.list 是否存在并写入
           if [ -f proxy-diy.list ]; then
             cat proxy-diy.list >> build/proxy-diy.yaml
           fi
           
-          # 3. 直接编译为 proxy-diy.mrs 文件，同样加上保险
-          timeout 5s mihomo cli ruleset compile build/proxy-diy.yaml -d . || true
-          mv build/proxy-diy.mrs ./proxy-diy.mrs
+          timeout 10s mihomo cli ruleset compile build/proxy-diy.yaml -d build || true
+          
+          if [ -f build/proxy-diy.mrs ]; then
+            mv build/proxy-diy.mrs ./proxy-diy.mrs
+          fi
 
       - name: Commit and Push Results
         run: |
           git config --local user.email "actions@github.com"
           git config --local user.name "GitHub Actions"
-          git add direct-diy.mrs proxy-diy.mrs
-          git commit -m "Automated update: Compiled MRS rules" || echo "No changes detected, skipping commit."
-          git push origin main
+          
+          # 仅添加确实存在的 mrs 文件
+          [ -f direct-diy.mrs ] && git add direct-diy.mrs
+          [ -f proxy-diy.mrs ] && git add proxy-diy.mrs
+          
+          # 核心修复 4：严谨判断是否有文件变动，有变动才 push，避免权限或空提交引发 exit code 1
+          if ! git diff --staged --quiet; then
+            git commit -m "Automated update: Compiled MRS rules"
+            git push origin main
+          else
+            echo "No changes to commit, skipping push."
+          fi
