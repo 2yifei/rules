@@ -5,8 +5,8 @@ on:
     branches:
       - main
   schedule:
-    - cron: '0 22 * * *' # 每天北京时间早上 6 点自动运行，保证同步对方的最新更新
-  workflow_dispatch: # 允许你随时手动点击运行
+    - cron: '0 22 * * *' # 每天北京时间早上 6 点自动运行
+  workflow_dispatch: # 允许手动点击运行
 
 jobs:
   build:
@@ -15,13 +15,16 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: 'stable'
-
-      - name: Install Mihomo Compiler
-        run: GO111MODULE=on go install github.com/metacubex/mihomo@latest
+      # --- 修复核心：直接下载官方编译好的二进制文件，绕过 Go install 报错 ---
+      - name: Download Mihomo Binary
+        run: |
+          mkdir -p bin
+          # 下载官方专为 Ubuntu 准备的 amd64 稳定版
+          curl -sSL "https://github.com/MetaCubeX/mihomo/releases/download/v1.19.26/mihomo-linux-amd64-v1.19.26.gz" -o bin/mihomo.gz
+          gzip -d bin/mihomo.gz
+          chmod +x bin/mihomo
+          # 将其加入系统路径方便调用
+          sudo mv bin/mihomo /usr/local/bin/mihomo
 
       # --- 处理第一个文件（下载对方mrs + 解压 + 合并你的自定义txt -> 编译为 direct-diy.mrs） ---
       - name: Process Direct-DIY Rule
@@ -30,8 +33,8 @@ jobs:
           # 1. 下载对方已有的二进制 mrs 文件（请把下面链接换成对方真实的 mrs 链接）
           curl -sSL "https://raw.githubusercontent.com/Seven1echo/Yaml/refs/heads/main/rules/Seven1_Direct_Domain.mrs" -o build/others.mrs
           
-          # 2. 利用 mihomo 工具将对方的 mrs 反编译/解压为 yaml 文本
-          ~/go/bin/mihomo cli ruleset unpack build/others.mrs -o build/others.yaml
+          # 2. 利用新下载的 mihomo 工具将对方的 mrs 反编译为 yaml 文本
+          mihomo cli ruleset unpack build/others.mrs -o build/others.yaml
           
           # 3. 创建一个新的规则模板头
           echo "payload:" > build/direct-diy.yaml
@@ -45,7 +48,7 @@ jobs:
           fi
           
           # 6. 重新编译成更高效率的 direct-diy.mrs
-          ~/go/bin/mihomo cli ruleset compile build/direct-diy.yaml
+          mihomo cli ruleset compile build/direct-diy.yaml
           mv build/direct-diy.mrs ./direct-diy.mrs
 
       # --- 处理第二个文件（全新自定义文本 -> 直接编译为 proxy-diy.mrs） ---
@@ -55,7 +58,7 @@ jobs:
           if [ -f my-own-rules.list ]; then
             cat my-own-rules.list >> build/proxy-diy.yaml
           fi
-          ~/go/bin/mihomo cli ruleset compile build/proxy-diy.yaml
+          mihomo cli ruleset compile build/proxy-diy.yaml
           mv build/proxy-diy.mrs ./proxy-diy.mrs
 
       # --- 将两个编译好的二进制文件保存回你的仓库 ---
