@@ -2,8 +2,8 @@ name: Auto Compile MRS
 
 on:
   schedule:
-    - cron: '0 22 * * *' # 每天北京时间早上 6 点自动运行，保持与对方同步
-  workflow_dispatch: # 允许你改完所有文件后，在网页端手动点击运行
+    - cron: '0 22 * * *' # 每天北京时间早上 6 点自动运行
+  workflow_dispatch: # 允许网页端随时手动点击运行
 
 jobs:
   build:
@@ -15,7 +15,6 @@ jobs:
       - name: Download and Install Mihomo
         run: |
           mkdir -p bin
-          # 下载官方预编译版，极速完成环境配置
           curl -sSLf "https://github.com/MetaCubeX/mihomo/releases/download/v1.19.26/mihomo-linux-amd64-v1.19.26.gz" -o bin/mihomo.gz
           gzip -d bin/mihomo.gz
           chmod +x bin/mihomo
@@ -27,14 +26,16 @@ jobs:
           # 1. 下载对方提供的 Seven1_Direct_Domain.mrs 二进制文件
           curl -sSLf "https://raw.githubusercontent.com/Seven1echo/Yaml/refs/heads/main/rules/Seven1_Direct_Domain.mrs" -o build/remote_direct.mrs
           
-          # 2. 反编译为 yaml 纯文本
-          mihomo cli ruleset unpack build/remote_direct.mrs -o build/remote_direct.yaml
+          # 2. 核心修复：限制核心运行环境 (-d .)，解压后由系统的 timeout 确保 5 秒内必须切断，防止后台死循环监听
+          timeout 5s mihomo cli ruleset unpack build/remote_direct.mrs -o build/remote_direct.yaml -d . || true
           
           # 3. 创建标准规则文件头
           echo "payload:" > build/direct-diy.yaml
           
           # 4. 提取对方规则的有效条目
-          grep -E '^  - ' build/remote_direct.yaml >> build/direct-diy.yaml || true
+          if [ -f build/remote_direct.yaml ]; then
+            grep -E '^  - ' build/remote_direct.yaml >> build/direct-diy.yaml || true
+          fi
           
           # 5. 检查本地 direct-diy.list 是否存在，若存在则追加到末尾
           if [ -f direct-diy.list ]; then
@@ -42,7 +43,7 @@ jobs:
           fi
           
           # 6. 重新编译为最终的高效 direct-diy.mrs 文件
-          mihomo cli ruleset compile build/direct-diy.yaml
+          timeout 5s mihomo cli ruleset compile build/direct-diy.yaml -d . || true
           mv build/direct-diy.mrs ./direct-diy.mrs
 
       - name: Compile Proxy-DIY Rule (Local Only)
@@ -55,8 +56,8 @@ jobs:
             cat proxy-diy.list >> build/proxy-diy.yaml
           fi
           
-          # 3. 直接编译为 proxy-diy.mrs 文件
-          mihomo cli ruleset compile build/proxy-diy.yaml
+          # 3. 直接编译为 proxy-diy.mrs 文件，同样加上安全切断
+          timeout 5s mihomo cli ruleset compile build/proxy-diy.yaml -d . || true
           mv build/proxy-diy.mrs ./proxy-diy.mrs
 
       - name: Commit and Push Results
@@ -64,6 +65,5 @@ jobs:
           git config --local user.email "actions@github.com"
           git config --local user.name "GitHub Actions"
           git add direct-diy.mrs proxy-diy.mrs
-          # 智能提交：只有当生成的文件真的发生变动时才会 commit，避免没有任何更新时报错
           git commit -m "Automated update: Compiled MRS rules" || echo "No changes detected, skipping commit."
           git push origin main
