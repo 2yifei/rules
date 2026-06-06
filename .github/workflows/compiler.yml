@@ -22,82 +22,68 @@ jobs:
           gzip -d bin/mihomo.gz
           chmod +x bin/mihomo
           sudo mv bin/mihomo /usr/local/bin/mihomo
-          echo "mixed-port: 0" > build/config.yaml
 
       - name: Compile Direct-DIY Rule (Remote Merge)
         run: |
-          # 🔴 核心修复 1：彻底清洗你上传的文本，干掉 Windows 回车符(\r)和首尾空格
-          if [ -f direct-diy.list ]; then
-            sed -i 's/\r$//; s/^[[:space:]]*//; s/[[:space:]]*$//; /^$/d' direct-diy.list
-          fi
-          
+          # 1. 下载对方的 mrs 文件
           curl -sSLf "https://raw.githubusercontent.com/Seven1echo/Yaml/refs/heads/main/rules/Seven1_Direct_Domain.mrs" -o build/remote_direct.mrs || true
           
+          # 2. 利用新命令，将对方的 mrs 解压为 yaml 格式
           if [ -f build/remote_direct.mrs ]; then
-            timeout 5s mihomo cli ruleset unpack build/remote_direct.mrs -o build/remote_direct.yaml -d build || true
+            mihomo convert-ruleset domain mrs build/remote_direct.mrs build/remote_direct.yaml || true
           fi
           
-          echo "payload:" > build/direct-diy.yaml
+          # 3. 将对方 yaml 里的域名剥离出来，还原成纯洁的文本列表
+          touch build/combined-direct.txt
           if [ -f build/remote_direct.yaml ]; then
-            grep -E '^  - ' build/remote_direct.yaml >> build/direct-diy.yaml || true
+            grep -E '^[[:space:]]*- ' build/remote_direct.yaml | sed "s/^[[:space:]]*-[[:space:]]*['\"]*//; s/['\"]*$//" > build/combined-direct.txt
           fi
           
+          # 4. 清理你的 direct-diy.list 并追加进去
           if [ -f direct-diy.list ]; then
-            sed 's/^/  - "/; s/$/"/' direct-diy.list >> build/direct-diy.yaml
+            sed 's/\r$//; s/^[[:space:]]*//; s/[[:space:]]*$//; /^$/d' direct-diy.list >> build/combined-direct.txt
           fi
           
-          timeout 5s mihomo cli ruleset compile build/direct-diy.yaml -d build || true
+          # 5. 官方魔法：直接将合并好的纯文本 (text) 按照 domain 模式编译为 mrs！
+          if [ -s build/combined-direct.txt ]; then
+            mihomo convert-ruleset domain text build/combined-direct.txt direct-diy.mrs
+          fi
           
-          # 🔴 核心修复 2：如果编译失败没产出文件，立刻报错阻断，并打印出问题在哪！
-          if [ ! -f build/direct-diy.mrs ]; then
-            echo "❌ 严重错误：direct-diy.mrs 编译失败！极可能是合并后的格式不合法。"
-            echo "--- 合并后的前20行 ---"
-            head -n 20 build/direct-diy.yaml
-            echo "--- 合并后的最后20行 (你的自定义部分) ---"
-            tail -n 20 build/direct-diy.yaml
+          if [ ! -f direct-diy.mrs ]; then
+            echo "❌ direct-diy.mrs 编译失败！"
             exit 1
           fi
-          
-          mv build/direct-diy.mrs ./direct-diy.mrs
 
       - name: Compile Proxy-DIY Rule (Local Only)
         run: |
-          # 同样进行清洗
+          touch build/combined-proxy.txt
+          
+          # 清理你的 proxy-diy.list
           if [ -f proxy-diy.list ]; then
-            sed -i 's/\r$//; s/^[[:space:]]*//; s/[[:space:]]*$//; /^$/d' proxy-diy.list
+            sed 's/\r$//; s/^[[:space:]]*//; s/[[:space:]]*$//; /^$/d' proxy-diy.list > build/combined-proxy.txt
           fi
           
-          echo "payload:" > build/proxy-diy.yaml
-          
-          if [ -f proxy-diy.list ]; then
-            sed 's/^/  - "/; s/$/"/' proxy-diy.list >> build/proxy-diy.yaml
+          # 同样直接将纯文本按照 domain 模式编译为 mrs
+          if [ -s build/combined-proxy.txt ]; then
+            mihomo convert-ruleset domain text build/combined-proxy.txt proxy-diy.mrs
           fi
           
-          timeout 5s mihomo cli ruleset compile build/proxy-diy.yaml -d build || true
-          
-          # 如果文件没生成，报错阻断并打印
-          if [ ! -f build/proxy-diy.mrs ]; then
-            echo "❌ 严重错误：proxy-diy.mrs 编译失败！请检查 proxy-diy.list 是否有非法字符。"
-            cat build/proxy-diy.yaml
+          if [ ! -f proxy-diy.mrs ]; then
+            echo "❌ proxy-diy.mrs 编译失败！"
             exit 1
           fi
-          
-          mv build/proxy-diy.mrs ./proxy-diy.mrs
 
       - name: Commit and Push Results
         run: |
           git config --local user.email "actions@github.com"
           git config --local user.name "GitHub Actions"
           
-          # 强行打印一下当前目录，确保文件真的在！
-          echo "当前目录文件列表："
-          ls -la
-          
-          git add direct-diy.mrs proxy-diy.mrs
+          [ -f direct-diy.mrs ] && git add direct-diy.mrs
+          [ -f proxy-diy.mrs ] && git add proxy-diy.mrs
           
           if ! git diff --staged --quiet; then
             git commit -m "Automated update: Compiled MRS rules"
             git push origin main
           else
-            echo "No changes to commit, skipping push."
+            echo "✅ 一切正常：文件未发生实质性内容更改，无需提交。"
           fi
