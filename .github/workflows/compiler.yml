@@ -5,7 +5,6 @@ on:
     - cron: '0 22 * * *' # 每天北京时间早上 6 点自动运行
   workflow_dispatch: # 允许网页端随时手动点击运行
 
-# 核心修复 1：赋予 GitHub Actions 推送代码到仓库的最高写入权限
 permissions:
   contents: write
 
@@ -23,35 +22,28 @@ jobs:
           gzip -d bin/mihomo.gz
           chmod +x bin/mihomo
           sudo mv bin/mihomo /usr/local/bin/mihomo
-          
-          # 核心修复 2：创建一个空白配置，彻底封杀 Mihomo 试图在后台启动代理监听的行为
           echo "mixed-port: 0" > build/config.yaml
 
       - name: Compile Direct-DIY Rule (Remote Merge)
         run: |
-          # 1. 下载对方提供的 .mrs 文件
           curl -sSLf "https://raw.githubusercontent.com/Seven1echo/Yaml/refs/heads/main/rules/Seven1_Direct_Domain.mrs" -o build/remote_direct.mrs || true
           
-          # 2. 解压（指定 -d build 让它读取我们的空白配置，保证用完即走）
           if [ -f build/remote_direct.mrs ]; then
             timeout 10s mihomo cli ruleset unpack build/remote_direct.mrs -o build/remote_direct.yaml -d build || true
           fi
           
-          # 3. 创建文件头并提取对方有效条目
           echo "payload:" > build/direct-diy.yaml
           if [ -f build/remote_direct.yaml ]; then
             grep -E '^  - ' build/remote_direct.yaml >> build/direct-diy.yaml || true
           fi
           
-          # 4. 叠加你自己的 direct-diy.list
+          # 核心修复：智能读取你的 list，去除空行，并自动加双引号和缩进，转换成合法 YAML 列表
           if [ -f direct-diy.list ]; then
-            cat direct-diy.list >> build/direct-diy.yaml
+            sed 's/^[[:space:]]*//; s/[[:space:]]*$//; /^$/d; s/^/  - "/; s/$/"/' direct-diy.list >> build/direct-diy.yaml
           fi
           
-          # 5. 重新编译
           timeout 10s mihomo cli ruleset compile build/direct-diy.yaml -d build || true
           
-          # 核心修复 3：文件确认生成了再去移动，防止找不到文件导致脚本报错崩溃
           if [ -f build/direct-diy.mrs ]; then
             mv build/direct-diy.mrs ./direct-diy.mrs
           fi
@@ -59,8 +51,10 @@ jobs:
       - name: Compile Proxy-DIY Rule (Local Only)
         run: |
           echo "payload:" > build/proxy-diy.yaml
+          
+          # 同样：智能转换 proxy-diy.list 为合法 YAML 列表
           if [ -f proxy-diy.list ]; then
-            cat proxy-diy.list >> build/proxy-diy.yaml
+            sed 's/^[[:space:]]*//; s/[[:space:]]*$//; /^$/d; s/^/  - "/; s/$/"/' proxy-diy.list >> build/proxy-diy.yaml
           fi
           
           timeout 10s mihomo cli ruleset compile build/proxy-diy.yaml -d build || true
@@ -74,11 +68,9 @@ jobs:
           git config --local user.email "actions@github.com"
           git config --local user.name "GitHub Actions"
           
-          # 仅添加确实存在的 mrs 文件
           [ -f direct-diy.mrs ] && git add direct-diy.mrs
           [ -f proxy-diy.mrs ] && git add proxy-diy.mrs
           
-          # 核心修复 4：严谨判断是否有文件变动，有变动才 push，避免权限或空提交引发 exit code 1
           if ! git diff --staged --quiet; then
             git commit -m "Automated update: Compiled MRS rules"
             git push origin main
