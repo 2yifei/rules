@@ -4,7 +4,6 @@ on:
   push:
     branches:
       - main
-    # 只有当这两个 list 文件发生变动时，才触发工作流
     paths:
       - 'proxy-diy.list'
       - 'direct-diy.list'
@@ -16,37 +15,51 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
         with:
-          fetch-depth: 2 # 必须设置为 2，这样才能对比上一次提交，获取文件变动
+          fetch-depth: 2 # 必须为 2 才能对比两次提交的差异
 
-      - name: Setup Mihomo / MetaCubeX CLI
-        # 这一步保持你原本安装/下载 mihomo 二进制文件的步骤即可
+      - name: Install Mihomo CLI
         run: |
-          # 假设你已经把 mihomo 放到了可执行路径中
-          echo "Mihomo CLI environment ready."
+          echo "正在从 MetaCubeX 官方下载最新内核..."
+          # 1. 从 GitHub Release 获取最新稳定版（针对 Linux amd64 架构）
+          curl -s https://api.github.com/repos/MetaCubeX/mihomo/releases/latest \
+          | grep "browser_download_url.*mihomo-linux-amd64-v" \
+          | head -n 1 \
+          | cut -d '"' -f 4 \
+          | xargs wget -q -O mihomo.gz
+
+          # 2. 解压并赋予执行权限
+          gunzip mihomo.gz
+          chmod +x mihomo
+          
+          # 3. 将其移动到系统 PATH 路径中，让后面的步骤可以直接使用 mihomo 命令
+          sudo mv mihomo /usr/local/bin/mihomo
+          
+          echo "Mihomo 内核安装成功，当前版本："
+          mihomo -v
 
       - name: Check Changes and Compile
         run: |
-          # 1. 检查 proxy-diy.list 是否发生了变化
+          # 1. 检查 proxy-diy.list
           if git diff --name-only HEAD~1 HEAD | grep -q "proxy-diy.list"; then
             echo "检测到 proxy-diy.list 发生变动，开始编译..."
             mihomo rule compile proxy-diy.list -o proxy-diy.mrs
           else
-            echo "proxy-diy.list 无变动，跳过编译。"
+            echo "proxy-diy.list 无变动，跳过。"
           fi
 
-          # 2. 检查 direct-diy.list 是否发生了变化
+          # 2. 检查 direct-diy.list
           if git diff --name-only HEAD~1 HEAD | grep -q "direct-diy.list"; then
             echo "检测到 direct-diy.list 发生变动，开始编译..."
             mihomo rule compile direct-diy.list -o direct-diy.mrs
           else
-            echo "direct-diy.list 无变动，跳过编译。"
+            echo "direct-diy.list 无变动，跳过。"
           fi
 
       - name: Commit and Push Changes
         run: |
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
-          # 只有当确实有 .mrs 文件生成或修改时才提交，防止没有变动时报错
+          
           if git status --porcelain | grep -q ".mrs"; then
             git add *.mrs
             git commit -m "Automated compilation of modified MRS [skip ci]"
