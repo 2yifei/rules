@@ -4,6 +4,9 @@ on:
   schedule:
     - cron: '0 22 * * *'
   workflow_dispatch:
+  push:
+    paths:
+      - '*.list'
 
 permissions:
   contents: write
@@ -17,73 +20,36 @@ jobs:
 
       - name: Download and Install Mihomo
         run: |
-          mkdir -p bin build
+          mkdir -p bin
           curl -sSLf "https://github.com/MetaCubeX/mihomo/releases/download/v1.19.26/mihomo-linux-amd64-v1.19.26.gz" -o bin/mihomo.gz
           gzip -d bin/mihomo.gz
           chmod +x bin/mihomo
           sudo mv bin/mihomo /usr/local/bin/mihomo
 
-      - name: Compile Direct-DIY Rule (Remote Merge)
+      - name: Compile Your Direct Rules
         run: |
-          # 1. 下载对方的 mrs 文件
-          curl -sSLf "https://raw.githubusercontent.com/Seven1echo/Yaml/refs/heads/main/rules/Seven1_Direct_Domain.mrs" -o build/remote_direct.mrs || true
-          
-          # 2. 利用新命令，将对方的 mrs 解压为 yaml 格式
-          if [ -f build/remote_direct.mrs ]; then
-            mihomo convert-ruleset domain mrs build/remote_direct.mrs build/remote_direct.yaml || true
-          fi
-          
-          # 3. 将对方 yaml 里的域名剥离出来，还原成纯洁的文本列表
-          touch build/combined-direct.txt
-          if [ -f build/remote_direct.yaml ]; then
-            grep -E '^[[:space:]]*- ' build/remote_direct.yaml | sed "s/^[[:space:]]*-[[:space:]]*['\"]*//; s/['\"]*$//" > build/combined-direct.txt
-          fi
-          
-          # 4. 清理你的 direct-diy.list 并追加进去
           if [ -f direct-diy.list ]; then
-            sed 's/\r$//; s/^[[:space:]]*//; s/[[:space:]]*$//; /^$/d' direct-diy.list >> build/combined-direct.txt
-          fi
-          
-          # 5. 官方魔法：直接将合并好的纯文本 (text) 按照 domain 模式编译为 mrs！
-          if [ -s build/combined-direct.txt ]; then
-            mihomo convert-ruleset domain text build/combined-direct.txt direct-diy.mrs
-          fi
-          
-          if [ ! -f direct-diy.mrs ]; then
-            echo "❌ direct-diy.mrs 编译失败！"
-            exit 1
+            # 清洗不可见字符
+            sed 's/\r$//; s/^[[:space:]]*//; s/[[:space:]]*$//; /^$/d' direct-diy.list > clean-direct.txt
+            mihomo convert-ruleset domain text clean-direct.txt direct-diy.mrs
           fi
 
-      - name: Compile Proxy-DIY Rule (Local Only)
+      - name: Compile Your Proxy Rules
         run: |
-          touch build/combined-proxy.txt
-          
-          # 清理你的 proxy-diy.list
           if [ -f proxy-diy.list ]; then
-            sed 's/\r$//; s/^[[:space:]]*//; s/[[:space:]]*$//; /^$/d' proxy-diy.list > build/combined-proxy.txt
-          fi
-          
-          # 同样直接将纯文本按照 domain 模式编译为 mrs
-          if [ -s build/combined-proxy.txt ]; then
-            mihomo convert-ruleset domain text build/combined-proxy.txt proxy-diy.mrs
-          fi
-          
-          if [ ! -f proxy-diy.mrs ]; then
-            echo "❌ proxy-diy.mrs 编译失败！"
-            exit 1
+            sed 's/\r$//; s/^[[:space:]]*//; s/[[:space:]]*$//; /^$/d' proxy-diy.list > clean-proxy.txt
+            mihomo convert-ruleset domain text clean-proxy.txt proxy-diy.mrs
           fi
 
       - name: Commit and Push Results
         run: |
           git config --local user.email "actions@github.com"
           git config --local user.name "GitHub Actions"
-          
           [ -f direct-diy.mrs ] && git add direct-diy.mrs
           [ -f proxy-diy.mrs ] && git add proxy-diy.mrs
-          
           if ! git diff --staged --quiet; then
             git commit -m "Automated update: Compiled MRS rules"
             git push origin main
           else
-            echo "✅ 一切正常：文件未发生实质性内容更改，无需提交。"
+            echo "✅ 一切正常：文件未发生实质性更改。"
           fi
